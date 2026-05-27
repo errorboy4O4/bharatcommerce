@@ -100,6 +100,58 @@ def _build_db_from_csvs(csv_dir, db_path):
     conn.close()
 
 
+def _download_from_kaggle(dest_dir):
+    """Download Olist dataset directly from Kaggle API."""
+    import urllib.request
+    import zipfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    # Get token — supports both new KGAT_ format and old username/key format
+    kaggle_token = ""
+    username = ""
+    key = ""
+
+    if hasattr(st, "secrets"):
+        kaggle_token = st.secrets.get("KAGGLE_API_TOKEN", "")
+        username = st.secrets.get("KAGGLE_USERNAME", "")
+        key = st.secrets.get("KAGGLE_KEY", "")
+
+    if not kaggle_token:
+        kaggle_token = os.environ.get("KAGGLE_API_TOKEN", "")
+    if not username:
+        username = os.environ.get("KAGGLE_USERNAME", "")
+    if not key:
+        key = os.environ.get("KAGGLE_KEY", "")
+
+    url = "https://www.kaggle.com/api/v1/datasets/download/olistbr/brazilian-ecommerce"
+    req = urllib.request.Request(url)
+
+    if kaggle_token:
+        # New KGAT_ token format — use Bearer auth
+        req.add_header("Authorization", f"Bearer {kaggle_token}")
+    elif username and key:
+        # Old username/key format — use Basic auth
+        import base64
+        credentials = base64.b64encode(f"{username}:{key}".encode()).decode()
+        req.add_header("Authorization", f"Basic {credentials}")
+    else:
+        return False
+
+    zip_path = os.path.join(dest_dir, "dataset.zip")
+
+    with urllib.request.urlopen(req) as response:
+        with open(zip_path, "wb") as f:
+            f.write(response.read())
+
+    # Extract
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(dest_dir)
+
+    os.remove(zip_path)
+    return True
+
+
 @st.cache_resource
 def get_connection():
     """Get SQLite connection. Auto-downloads dataset if needed."""
@@ -114,25 +166,28 @@ def get_connection():
             return sqlite3.connect(path, check_same_thread=False)
 
     # Database not found — try to build it
-    # First check if raw CSVs exist locally
     raw_dir = os.path.join(base_dir, "data", "raw")
     db_path = possible_paths[0]
 
+    # Check if raw CSVs exist locally
     if os.path.exists(raw_dir) and os.path.exists(os.path.join(raw_dir, "olist_orders_dataset.csv")):
         with st.spinner("Building database from local CSVs..."):
             _build_db_from_csvs(raw_dir, db_path)
             return sqlite3.connect(db_path, check_same_thread=False)
 
-    # Try downloading via kagglehub
+    # Try downloading from Kaggle API
     try:
-        import kagglehub
-        with st.spinner("Downloading dataset from Kaggle (first run only)..."):
-            dataset_path = kagglehub.dataset_download("olistbr/brazilian-ecommerce")
-            _build_db_from_csvs(dataset_path, db_path)
-            return sqlite3.connect(db_path, check_same_thread=False)
+        with st.spinner("Downloading dataset from Kaggle (first run only — takes ~30s)..."):
+            os.makedirs(raw_dir, exist_ok=True)
+            if _download_from_kaggle(raw_dir):
+                _build_db_from_csvs(raw_dir, db_path)
+                return sqlite3.connect(db_path, check_same_thread=False)
+            else:
+                st.error("Kaggle credentials not found. Add KAGGLE_API_TOKEN to Streamlit Secrets.")
+                st.stop()
     except Exception as e:
-        st.error(f"Could not load database: {e}")
-        st.info("Run `python src/setup_db.py` locally first, or ensure Kaggle access.")
+        st.error(f"Could not download dataset: {e}")
+        st.info("Run `python src/setup_db.py` locally first, or check Kaggle credentials in Secrets.")
         st.stop()
 
 
