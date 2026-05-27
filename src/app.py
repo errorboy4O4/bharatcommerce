@@ -75,19 +75,65 @@ st.markdown("""
 
 
 # ── Database Connection ──────────────────────────────────────
+def _build_db_from_csvs(csv_dir, db_path):
+    """Build SQLite database from CSV files in given directory."""
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    tables = {
+        "customers": "olist_customers_dataset.csv",
+        "orders": "olist_orders_dataset.csv",
+        "order_items": "olist_order_items_dataset.csv",
+        "order_payments": "olist_order_payments_dataset.csv",
+        "order_reviews": "olist_order_reviews_dataset.csv",
+        "sellers": "olist_sellers_dataset.csv",
+        "geolocation": "olist_geolocation_dataset.csv",
+    }
+    for table_name, csv_file in tables.items():
+        df = pd.read_csv(os.path.join(csv_dir, csv_file))
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+    # Products with translation merge
+    products = pd.read_csv(os.path.join(csv_dir, "olist_products_dataset.csv"))
+    translation = pd.read_csv(os.path.join(csv_dir, "product_category_name_translation.csv"))
+    products = products.merge(translation, on="product_category_name", how="left")
+    products.to_sql("products", conn, if_exists="replace", index=False)
+    conn.commit()
+    conn.close()
+
+
 @st.cache_resource
 def get_connection():
-    """Get SQLite connection. Searches common paths."""
+    """Get SQLite connection. Auto-downloads dataset if needed."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     possible_paths = [
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "bharatcommerce.db"),
+        os.path.join(base_dir, "data", "bharatcommerce.db"),
         os.path.join("data", "bharatcommerce.db"),
         "bharatcommerce.db",
     ]
     for path in possible_paths:
         if os.path.exists(path):
             return sqlite3.connect(path, check_same_thread=False)
-    st.error("Database not found. Run `python src/setup_db.py` first.")
-    st.stop()
+
+    # Database not found — try to build it
+    # First check if raw CSVs exist locally
+    raw_dir = os.path.join(base_dir, "data", "raw")
+    db_path = possible_paths[0]
+
+    if os.path.exists(raw_dir) and os.path.exists(os.path.join(raw_dir, "olist_orders_dataset.csv")):
+        with st.spinner("Building database from local CSVs..."):
+            _build_db_from_csvs(raw_dir, db_path)
+            return sqlite3.connect(db_path, check_same_thread=False)
+
+    # Try downloading via kagglehub
+    try:
+        import kagglehub
+        with st.spinner("Downloading dataset from Kaggle (first run only)..."):
+            dataset_path = kagglehub.dataset_download("olistbr/brazilian-ecommerce")
+            _build_db_from_csvs(dataset_path, db_path)
+            return sqlite3.connect(db_path, check_same_thread=False)
+    except Exception as e:
+        st.error(f"Could not load database: {e}")
+        st.info("Run `python src/setup_db.py` locally first, or ensure Kaggle access.")
+        st.stop()
 
 
 @st.cache_data(ttl=600)
