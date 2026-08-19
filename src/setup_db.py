@@ -310,7 +310,7 @@ def build_database():
     conn.close()
 
     print("\n" + "=" * 60)
-    print("✅ Database ready! You can now write SQL queries against it.")
+    print("Database ready! You can now write SQL queries against it.")
     print("=" * 60)
 
 
